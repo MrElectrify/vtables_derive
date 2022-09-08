@@ -1,7 +1,7 @@
 [package]
 name = "vtables_derive"
-version = "0.1.0"
-authors = ["jan"]
+version = "0.2.0"
+authors = ["jan", "Andrew Buck"]
 edition = "2018"
 license = "GPL-3.0"
 readme = "README.md"
@@ -22,4 +22,4 @@ features = ["full"]
 
 [dev-dependencies]
 static_assertions = "1"
-vtables = "0.1"
+vtables = { version = "0.2", git = "https://github.com/MrElectrify/vtables.git" }

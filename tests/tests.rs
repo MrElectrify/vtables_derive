@@ -28,6 +28,14 @@ trait EngineClientTrait {
     fn test_fn_3(t: usize);
 }
 
+#[has_vtable(base = EngineClient)]
+#[derive(VTable, Debug)]
+struct DerivedEngineClient {}
+
+#[has_vtable(base = DerivedEngineClient)]
+#[derive(VTable, Debug)]
+struct DoublyDerivedEngineClient {}
+
 // ================================================================================================
 // These structures will fail to compile if #[derive(VTable)] does not respect
 // their generics.
@@ -99,6 +107,22 @@ impl Default for EngineClient {
     }
 }
 
+impl Default for DerivedEngineClient {
+    fn default() -> Self {
+        Self {
+            base_with_vtable: EngineClient::default()
+        }
+    }
+}
+
+impl Default for DoublyDerivedEngineClient {
+    fn default() -> Self {
+        Self {
+            base_with_vtable: DerivedEngineClient::default()
+        }
+    }
+}
+
 #[allow(non_snake_case)]
 impl EngineClient {
     #[virtual_index(0)]
@@ -115,7 +139,10 @@ impl EngineClient {
 
     #[virtual_index(108)]
     pub fn ExecuteClientCmd(&self, command: *const c_char) {}
+}
 
+#[allow(non_snake_case)]
+impl DerivedEngineClient {
     #[virtual_index(113)]
     pub fn ClientCmd_Unrestricted(&self, command: *const c_char) {}
 }
@@ -159,7 +186,72 @@ fn virtual_index_retains_declared_methods() {
     verify!(GetScreenSize, w, h);
     verify!(IsInGame);
     verify!(ExecuteClientCmd, command);
+}
+
+#[test]
+fn virtual_derived_index_retains_declared_methods() {
+    // This function will fail to compile if #[virtual_index(...)] fails to emit the
+    // method it decorates.
+
+    let engine_client = DerivedEngineClient::default();
+
+    macro_rules! verify {
+        ($method:ident) => {{
+            verify!($method,)
+        }};
+
+        ($method:ident, $($arg:ident),*) => {{
+            let _f = |$($arg),*| engine_client.$method($($arg),*);
+        }};
+    }
+
+    macro_rules! verify_derived {
+        ($method:ident) => {{
+            verify_derived!($method,)
+        }};
+
+        ($method:ident, $($arg:ident),*) => {{
+            let _f = |$($arg),*| engine_client.base_with_vtable.$method($($arg),*);
+        }};
+    }
+
+    verify_derived!(GetScreenSize, w, h);
+    verify_derived!(IsInGame);
+    verify_derived!(ExecuteClientCmd, command);
     verify!(ClientCmd_Unrestricted, command);
+}
+
+#[test]
+fn virtual_doubly_derived_index_retains_declared_methods() {
+    // This function will fail to compile if #[virtual_index(...)] fails to emit the
+    // method it decorates.
+
+    let engine_client = DoublyDerivedEngineClient::default();
+
+    macro_rules! verify_derived {
+        ($method:ident) => {{
+            verify_derived!($method,)
+        }};
+
+        ($method:ident, $($arg:ident),*) => {{
+            let _f = |$($arg),*| engine_client.base_with_vtable.$method($($arg),*);
+        }};
+    }
+
+    macro_rules! verify_doubly_derived {
+        ($method:ident) => {{
+            verify_doubly_derived!($method,)
+        }};
+
+        ($method:ident, $($arg:ident),*) => {{
+            let _f = |$($arg),*| engine_client.base_with_vtable.base_with_vtable.$method($($arg),*);
+        }};
+    }
+
+    verify_doubly_derived!(GetScreenSize, w, h);
+    verify_doubly_derived!(IsInGame);
+    verify_doubly_derived!(ExecuteClientCmd, command);
+    verify_derived!(ClientCmd_Unrestricted, command);
 }
 
 fn new_vtable_with_one_function(

@@ -4,19 +4,40 @@ extern crate proc_macro;
 use crate::proc_macro::TokenStream;
 use quote::{format_ident, quote, ToTokens};
 use std::ops::Deref;
-use syn::{
-    self,
-    parse::{Parse, ParseStream, Parser},
-    parse_macro_input,
-    spanned::Spanned,
-    Attribute, DeriveInput, ExprLit, Field,
-    Fields::Named,
-    FnArg, ItemFn, ItemStruct, ItemTrait, Lit, Meta, MetaList, NestedMeta, Pat, Result, Signature,
-    TraitItem, Type,
-};
+use proc_macro2::Ident;
+use syn::{self, parse::{Parse, ParseStream, Parser}, parse_macro_input, spanned::Spanned, Attribute, ExprLit, Field, Fields::Named, FnArg, ItemFn, ItemStruct, ItemTrait, Lit, Meta, MetaList, NestedMeta, Pat, Result, Signature, TraitItem, Type, Token};
 
-fn impl_vtable(ast: DeriveInput) -> TokenStream {
-    let DeriveInput {
+fn struct_has_base_with_vtable(item_struct: &ItemStruct) -> bool {
+    let fields = if let Named(fields) = &item_struct.fields {
+        fields
+    } else {
+        // todo: https://docs.rs/syn/1.0.11/syn/struct.Error.html
+        panic!("You can only decorate with #[has_vtable] a struct that has named fields.");
+    };
+
+    fields.named.first()
+        .map(|field| field.ident
+            .as_ref()
+            .map(|ident| ident == "base_with_vtable")
+            .unwrap_or(false))
+        .unwrap_or(false)
+}
+
+fn impl_vtable(ast: ItemStruct) -> TokenStream {
+    let get_vtable = if struct_has_base_with_vtable(&ast) {
+        quote! {
+            fn get_vtable(&self) -> *mut *mut usize {
+                self.base_with_vtable.get_vtable() as *mut *mut usize
+            }
+        }
+    } else {
+        quote! {
+            fn get_vtable(&self) -> *mut *mut usize {
+                self.vtable as *mut *mut usize
+            }
+        }
+    };
+    let ItemStruct {
         ident, generics, ..
     } = ast;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -24,9 +45,11 @@ fn impl_vtable(ast: DeriveInput) -> TokenStream {
     let gen = quote! {
         impl #impl_generics VTable for #ident #ty_generics #where_clause {
             unsafe fn get_virtual<__VirtualMethodType: Sized>(&self, index: usize) -> __VirtualMethodType {
-                let vtable = self.vtable as *const __VirtualMethodType;
+                let vtable = self.get_vtable() as *const __VirtualMethodType;
                 vtable.add(index).read()
             }
+
+            #get_vtable
         }
     };
 
@@ -35,17 +58,48 @@ fn impl_vtable(ast: DeriveInput) -> TokenStream {
 
 #[proc_macro_derive(VTable)]
 pub fn vtable_derive(input: TokenStream) -> TokenStream {
-    let ast = parse_macro_input!(input as DeriveInput);
+    let ast = parse_macro_input!(input as ItemStruct);
     impl_vtable(ast)
 }
 
-fn add_vtable_field(item_struct: &mut ItemStruct) {
+struct BaseType {
+    name: Ident,
+    _eq_token: Token![=],
+    pub typ: Type,
+}
+
+impl Parse for BaseType {
+    fn parse(input: ParseStream) -> Result<Self> {
+        Ok(Self {
+            name: input.parse()?,
+            _eq_token: input.parse()?,
+            typ: input.parse()?
+        })
+    }
+}
+
+fn add_vtable_field(item_struct: &mut ItemStruct, base_type: Option<BaseType>) {
     let fields = if let Named(fields) = &mut item_struct.fields {
         fields
     } else {
         // todo: https://docs.rs/syn/1.0.11/syn/struct.Error.html
         panic!("You can only decorate with #[has_vtable] a struct that has named fields.");
     };
+
+    match base_type {
+        Some(BaseType { name, typ, .. }) if name == "base" => {
+            let base_with_vtable_field = Field::parse_named
+                .parse2(quote! { pub base_with_vtable: #typ })
+                .expect("Failed to create base with vtable");
+
+            fields.named.insert(0, base_with_vtable_field);
+            return;
+        },
+        Some(typ) => {
+            panic!("Unexpected tag {}", typ.name);
+        },
+        _ => {}
+    }
 
     let struct_already_has_vtable_field = fields
         .named
@@ -102,9 +156,14 @@ fn add_repr_c(item_struct: &mut ItemStruct) {
 }
 
 #[proc_macro_attribute]
-pub fn has_vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn has_vtable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut parsed: ItemStruct = parse_macro_input!(item as ItemStruct);
-    add_vtable_field(&mut parsed);
+    let base_struct_type = if attr.is_empty() {
+        None
+    } else {
+        Some(parse_macro_input!(attr as BaseType))
+    };
+    add_vtable_field(&mut parsed, base_struct_type);
     add_repr_c(&mut parsed);
     parsed.into_token_stream().into()
 }
